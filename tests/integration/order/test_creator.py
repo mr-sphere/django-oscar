@@ -55,6 +55,7 @@ class TestOrderCreatorErrorCases(TestCase):
         self.creator = OrderCreator()
         self.basket = factories.create_basket(empty=True)
         self.surcharges = SurchargeApplicator().get_applicable_surcharges(self.basket)
+        self.basket.strategy = UK()
 
     def test_raises_exception_when_empty_basket_passed(self):
         with self.assertRaises(ValueError):
@@ -75,6 +76,49 @@ class TestOrderCreatorErrorCases(TestCase):
                 basket=self.basket,
                 order_number="1234",
             )
+
+    def test_no_error_with_none_offer_discount(self):
+        """Test that a discount with no offer can be processed without raising an error"""
+        # Setup
+        product = factories.create_product()
+        factories.create_stockrecord(
+            product=product, price=D("10.00"), num_in_stock=1000
+        )
+        self.basket.add_product(product)
+
+        # Calculate shipping and totals
+        shipping_method = Free()
+        shipping_charge = shipping_method.calculate(self.basket)
+        total = calculators.OrderTotalCalculator().calculate(
+            basket=self.basket,
+            shipping_charge=shipping_charge,
+            surcharges=self.surcharges,
+        )
+
+        # Add discount without offer
+        line = self.basket.all_lines()[0]
+        line.discount(
+            discount_value=D("2.00"),
+            affected_quantity=1,
+            incl_tax=True,
+            offer=None,
+        )
+        # Verify order can be placed without error
+        try:
+            order = place_order(
+                self.creator,
+                basket=self.basket,
+                total=total,
+                shipping_method=shipping_method,
+                shipping_charge=shipping_charge,
+                user=AnonymousUser(),
+                order_number="test123",
+                surcharges=self.surcharges,
+            )
+            self.assertIsNotNone(order)
+
+        except Exception as e:
+            self.fail(f"Unexpected exception raised: {str(e)}")
 
 
 class TestSuccessfulOrderCreation(TestCase):
@@ -527,3 +571,39 @@ class TestConcurrentOrderPlacement(TransactionTestCase):
         assert voucher.applications.count() == 1
 
         assert Order.objects.count() == 1
+
+
+@override_settings(OSCAR_OFFERS_INCL_TAX=True)
+class TestTaxValuesForOrder(TestCase):
+    def test_tax_values_with_discount(self):
+        """Test that an order has correct discount tax values"""
+        # Setup
+        creator = OrderCreator()
+        basket = factories.create_basket(empty=True)
+        basket.strategy = UK()
+        for _ in range(5):
+            basket.add_product(factories.create_product(price=D("4.0"), num_in_stock=1))
+
+        product_range = Range.objects.create(
+            name="All products range", includes_all_products=True
+        )
+        benefit = Benefit.objects.create(
+            range=product_range, type=Benefit.FIXED_UNIT, value=D("2.25")
+        )
+        offer = factories.create_offer(product_range=product_range, benefit=benefit)
+        Applicator().apply_offers(basket, [offer])
+
+        order = place_order(creator, basket=basket, surcharges=None)
+        self.assertEqual(order.total_before_discounts_excl_tax, D("20.00"))
+        self.assertEqual(order.total_before_discounts_incl_tax, D("24.00"))
+        self.assertEqual(
+            order.total_excl_tax + order.total_discount_excl_tax, D("20.00")
+        )
+        self.assertEqual(
+            order.total_incl_tax + order.total_discount_incl_tax, D("24.00")
+        )
+        self.assertEqual(order.total_discount_excl_tax, D("9.35"))
+        self.assertEqual(order.total_discount_incl_tax, D("11.25"))
+        self.assertEqual(order.total_excl_tax, D("10.65"))
+        self.assertEqual(order.total_incl_tax, D("12.75"))
+        self.assertEqual(order.total_tax, D("2.10"))

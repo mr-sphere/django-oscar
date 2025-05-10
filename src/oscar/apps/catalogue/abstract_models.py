@@ -845,7 +845,7 @@ class AbstractProduct(models.Model):
         only display one product image, e.g. in a list of products.
         """
         images = self.get_all_images()
-        ordering = self.images.model.Meta.ordering
+        ordering = self.images.model._meta.ordering
         if not ordering or ordering[0] != "display_order":
             # Only apply order_by() if a custom model doesn't use default
             # ordering. Applying order_by() busts the prefetch cache of
@@ -1680,3 +1680,19 @@ class AbstractProductImage(models.Model):
         for idx, image in enumerate(self.product.images.all()):
             image.display_order = idx
             image.save()
+
+
+class AbstractProductCategoryHierarchy(models.Model):
+    id = models.CharField(max_length=255, primary_key=True)
+    product_id = models.IntegerField()
+    category_id = models.IntegerField()
+
+    class Meta:
+        abstract = True
+        app_label = "catalogue"
+        verbose_name = _("Product category hierarchy")
+        verbose_name_plural = _("Product categories hierarchy")
+
+        # Point to postgres created product hierarchy
+        db_table = "catalogue_product_category_hierarchy"
+        managed = False
